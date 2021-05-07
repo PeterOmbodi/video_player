@@ -318,6 +318,10 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   _displayLink.paused = !_isPlaying;
 }
 
+- (bool)isDurationIndefinite {
+  return CMTIME_IS_INDEFINITE([[_player currentItem] duration]);
+}
+
 - (void)finishInitialization {
   if (_eventSink && !_isInitialized) {
     AVPlayerItem* item = [self.player currentItem];
@@ -330,9 +334,9 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
       return;
     }
     // The player may be initialized but still needs to determine the duration.
-    //if ([self duration] == 0) {
-    //  return;
-    //}
+    if ([self duration] == 0 && ![self isDurationIndefinite]) {
+      return;
+    }
 
     _isInitialized = true;
     [item addOutput:_videoOutput];
@@ -350,6 +354,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     _eventSink(@{
       @"event" : @"initialized",
       @"duration" : @([self duration]),
+      @"isDurationIndefinite": @([self isDurationIndefinite]),
       @"width" : @(width),
       @"height" : @(height)
     });

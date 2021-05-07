@@ -33,6 +33,7 @@ class VideoPlayerValue {
     this.position = Duration.zero,
     this.caption = Caption.none,
     this.buffered = const <DurationRange>[],
+    this.isDurationIndefinite = false,
     this.isInitialized = false,
     this.isPlaying = false,
     this.isLooping = false,
@@ -78,6 +79,9 @@ class VideoPlayerValue {
 
   /// True if the video is currently buffering.
   final bool isBuffering;
+
+  /// True if the video has an undetermined duration, eg. a live stream.
+  final bool isDurationIndefinite;
 
   /// The current volume of the playback.
   final double volume;
@@ -125,6 +129,7 @@ class VideoPlayerValue {
     Duration? position,
     Caption? caption,
     List<DurationRange>? buffered,
+    bool? isDurationIndefinite,
     bool? isInitialized,
     bool? isPlaying,
     bool? isLooping,
@@ -139,6 +144,7 @@ class VideoPlayerValue {
       position: position ?? this.position,
       caption: caption ?? this.caption,
       buffered: buffered ?? this.buffered,
+      isDurationIndefinite: isDurationIndefinite ?? this.isDurationIndefinite,
       isInitialized: isInitialized ?? this.isInitialized,
       isPlaying: isPlaying ?? this.isPlaying,
       isLooping: isLooping ?? this.isLooping,
@@ -157,6 +163,7 @@ class VideoPlayerValue {
         'position: $position, '
         'caption: $caption, '
         'buffered: [${buffered.join(', ')}], '
+        'isDurationIndefinite: $isDurationIndefinite, '
         'isInitialized: $isInitialized, '
         'isPlaying: $isPlaying, '
         'isLooping: $isLooping, '
@@ -319,6 +326,8 @@ class VideoPlayerController extends ValueNotifier<VideoPlayerValue> {
         case VideoEventType.initialized:
           value = value.copyWith(
             duration: event.duration,
+            //todo need to add field to VideoEvent
+            // isDurationIndefinite: event.isDurationIndefinite,
             size: event.size,
             isInitialized: event.duration != null,
           );

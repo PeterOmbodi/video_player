@@ -1,4 +1,4 @@
-// Copyright 2013 The Flutter Authors. All rights reserved.
+// Copyright 2017 The Chromium Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
@@ -41,9 +41,8 @@
 @property(nonatomic, readonly) bool isPlaying;
 @property(nonatomic) bool isLooping;
 @property(nonatomic, readonly) bool isInitialized;
-- (instancetype)initWithURL:(NSURL*)url
-               frameUpdater:(FLTFrameUpdater*)frameUpdater
-                httpHeaders:(NSDictionary<NSString*, NSString*>*)headers;
+@property(nonatomic, copy) NSString* errorMessage;
+- (instancetype)initWithURL:(NSURL*)url frameUpdater:(FLTFrameUpdater*)frameUpdater;
 - (void)play;
 - (void)pause;
 - (void)setIsLooping:(bool)isLooping;
@@ -52,6 +51,8 @@
 
 static void* timeRangeContext = &timeRangeContext;
 static void* statusContext = &statusContext;
+static void* durationContext = &durationContext;
+static void* presentationSizeContext = &presentationSizeContext;
 static void* playbackLikelyToKeepUpContext = &playbackLikelyToKeepUpContext;
 static void* playbackBufferEmptyContext = &playbackBufferEmptyContext;
 static void* playbackBufferFullContext = &playbackBufferFullContext;
@@ -59,7 +60,7 @@ static void* playbackBufferFullContext = &playbackBufferFullContext;
 @implementation FLTVideoPlayer
 - (instancetype)initWithAsset:(NSString*)asset frameUpdater:(FLTFrameUpdater*)frameUpdater {
   NSString* path = [[NSBundle mainBundle] pathForResource:asset ofType:nil];
-  return [self initWithURL:[NSURL fileURLWithPath:path] frameUpdater:frameUpdater httpHeaders:nil];
+  return [self initWithURL:[NSURL fileURLWithPath:path] frameUpdater:frameUpdater];
 }
 
 - (void)addObservers:(AVPlayerItem*)item {
@@ -71,6 +72,14 @@ static void* playbackBufferFullContext = &playbackBufferFullContext;
          forKeyPath:@"status"
             options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew
             context:statusContext];
+  [item addObserver:self
+         forKeyPath:@"duration"
+            options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew
+            context:durationContext];
+  [item addObserver:self
+         forKeyPath:@"presentationSize"
+            options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew
+            context:presentationSizeContext];
   [item addObserver:self
          forKeyPath:@"playbackLikelyToKeepUp"
             options:NSKeyValueObservingOptionInitial | NSKeyValueObservingOptionNew
@@ -169,15 +178,8 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   _displayLink.paused = YES;
 }
 
-- (instancetype)initWithURL:(NSURL*)url
-               frameUpdater:(FLTFrameUpdater*)frameUpdater
-                httpHeaders:(NSDictionary<NSString*, NSString*>*)headers {
-  NSDictionary<NSString*, id>* options = nil;
-  if (headers != nil && [headers count] != 0) {
-    options = @{@"AVURLAssetHTTPHeaderFieldsKey" : headers};
-  }
-  AVURLAsset* urlAsset = [AVURLAsset URLAssetWithURL:url options:options];
-  AVPlayerItem* item = [AVPlayerItem playerItemWithAsset:urlAsset];
+- (instancetype)initWithURL:(NSURL*)url frameUpdater:(FLTFrameUpdater*)frameUpdater {
+  AVPlayerItem* item = [AVPlayerItem playerItemWithURL:url];
   return [self initWithPlayerItem:item frameUpdater:frameUpdater];
 }
 
@@ -270,21 +272,21 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     AVPlayerItem* item = (AVPlayerItem*)object;
     switch (item.status) {
       case AVPlayerItemStatusFailed:
-        if (_eventSink != nil) {
-          _eventSink([FlutterError
-              errorWithCode:@"VideoError"
-                    message:[@"Failed to load video: "
-                                stringByAppendingString:[item.error localizedDescription]]
-                    details:nil]);
-        }
+        self.errorMessage =
+            [@"Failed to load video: " stringByAppendingString:[item.error localizedDescription]];
+        [self checkError];
         break;
       case AVPlayerItemStatusUnknown:
         break;
       case AVPlayerItemStatusReadyToPlay:
-        [item addOutput:_videoOutput];
-        [self sendInitialized];
-        [self updatePlayingState];
+        if (!_isInitialized) {
+          [self finishInitialization];
+        }
         break;
+    }
+  } else if (context == durationContext || context == presentationSizeContext) {
+    if (!_isInitialized) {
+      [self finishInitialization];
     }
   } else if (context == playbackLikelyToKeepUpContext) {
     if ([[_player currentItem] isPlaybackLikelyToKeepUp]) {
@@ -316,9 +318,10 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   _displayLink.paused = !_isPlaying;
 }
 
-- (void)sendInitialized {
+- (void)finishInitialization {
   if (_eventSink && !_isInitialized) {
-    CGSize size = [self.player currentItem].presentationSize;
+    AVPlayerItem* item = [self.player currentItem];
+    CGSize size = item.presentationSize;
     CGFloat width = size.width;
     CGFloat height = size.height;
 
@@ -332,12 +335,30 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     }
 
     _isInitialized = true;
+    [item addOutput:_videoOutput];
+    [self sendInitialized];
+    [self updatePlayingState];
+  }
+}
+
+- (void)sendInitialized {
+  if (_eventSink) {
+    AVPlayerItem* item = [self.player currentItem];
+    CGSize size = item.presentationSize;
+    CGFloat width = size.width;
+    CGFloat height = size.height;
     _eventSink(@{
       @"event" : @"initialized",
       @"duration" : @([self duration]),
       @"width" : @(width),
       @"height" : @(height)
     });
+  }
+}
+
+- (void)checkError {
+  if (_eventSink && self.errorMessage) {
+    _eventSink([FlutterError errorWithCode:@"VideoError" message:self.errorMessage details:nil]);
   }
 }
 
@@ -406,7 +427,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   }
 }
 
-- (void)onTextureUnregistered:(NSObject<FlutterTexture>*)texture {
+- (void)onTextureUnregistered {
   dispatch_async(dispatch_get_main_queue(), ^{
     [self dispose];
   });
@@ -425,7 +446,10 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   // This line ensures the 'initialized' event is sent when the event
   // 'AVPlayerItemStatusReadyToPlay' fires before _eventSink is set (this function
   // onListenWithArguments is called)
-  [self sendInitialized];
+  if (!_isInitialized) {
+    [self finishInitialization];
+    [self checkError];
+  }
   return nil;
 }
 
@@ -436,6 +460,10 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
   _disposed = true;
   [_displayLink invalidate];
   [[_player currentItem] removeObserver:self forKeyPath:@"status" context:statusContext];
+  [[_player currentItem] removeObserver:self forKeyPath:@"duration" context:durationContext];
+  [[_player currentItem] removeObserver:self
+                             forKeyPath:@"presentationSize"
+                                context:presentationSizeContext];
   [[_player currentItem] removeObserver:self
                              forKeyPath:@"loadedTimeRanges"
                                 context:timeRangeContext];
@@ -536,8 +564,7 @@ static inline CGFloat radiansToDegrees(CGFloat radians) {
     return [self onPlayerSetup:player frameUpdater:frameUpdater];
   } else if (input.uri) {
     player = [[FLTVideoPlayer alloc] initWithURL:[NSURL URLWithString:input.uri]
-                                    frameUpdater:frameUpdater
-                                     httpHeaders:input.httpHeaders];
+                                    frameUpdater:frameUpdater];
     return [self onPlayerSetup:player frameUpdater:frameUpdater];
   } else {
     *error = [FlutterError errorWithCode:@"video_player" message:@"not implemented" details:nil];
